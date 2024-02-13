@@ -44,12 +44,12 @@ The scripts will automatically download the pretrained checkpoints.
 ```bash
 # From the root directory of the repo
 cd src/models/uniir_clip/
-conda env create -f clip_env.yml
+conda env create -f env.yml
 ```
 #### UniIR BLIP_SF and BLIP_FF
 ```bash
 cd src/models/uniir_blip/
-conda env create -f blip_env.yml
+conda env create -f env.yml
 ```
 ### 2. Scripts
 #### UniIR CLIP_SF
