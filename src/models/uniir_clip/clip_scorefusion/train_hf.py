@@ -24,6 +24,9 @@ from dotenv import load_dotenv
 import wandb
 
 # Local modules or packages
+import sys
+sys.path.append('/root/uniir/src/')
+
 from data.mbeir_data_utils import (
     build_mbeir_dataset_from_config,
     DatasetType,
@@ -33,8 +36,8 @@ from data.mbeir_data_utils import (
 from models.uniir_clip.engine import train_one_epoch, eval_engine
 from models.uniir_clip import utils
 from clip_sf import CLIPScoreFusion
-# from custom.hf_clip import HF_CLIPScoreFusion
-# from transformers import AutoConfig
+from custom.hf_clip import HF_CLIPScoreFusion
+from transformers import AutoConfig, AutoProcessor
 # Set up logger
 logger = logging.getLogger()
 
@@ -180,22 +183,13 @@ def main(config):
 
     # Initialize and load model
     print("Creating CLIP-SF model...")
-    model_config = config.model
-    pretrained_clip_model_dir = os.path.join(config.uniir_dir, model_config.pretrained_clip_model_dir)
-    logger.info(f"Downloading CLIP model to {pretrained_clip_model_dir}...")
-    model = CLIPScoreFusion(
-        model_name=model_config.clip_vision_model_name,
-        download_root=pretrained_clip_model_dir,
-        config=config,
-    )
-    model.float()  # The origial CLIP was in fp16 so we need to convert it to fp32
     
+    cfg = AutoConfig.from_pretrained("Bingsu/clip-vit-large-patch14-ko")
+    model = HF_CLIPScoreFusion(cfg)
+    processor = AutoProcessor.from_pretrained("Bingsu/clip-vit-large-patch14-ko")
+    img_preprocess_fn = processor.image_processor
+    tokenizer = processor.tokenizer
     
-    # model = HF_CLIPScoreFusion(
-        
-    # )
-    
-
     # Set up optimizer, and scaler
     # Apply different optimization strategies to different parameters
     # This is adapted from the UniVL-DR codebase
@@ -205,17 +199,6 @@ def main(config):
     rest_params = filter_parameters(model, include_condition)
     optimizer = create_optimizer(gain_or_bias_params, rest_params, config)
     scaler = GradScaler()  # Initialize the GradScaler
-
-    # If resume training, load the checkpoint
-    ckpt_config = model_config.ckpt_config
-    if ckpt_config.resume_training:
-        checkpoint_path = os.path.join(config.uniir_dir, ckpt_config.ckpt_dir, ckpt_config.ckpt_name)
-        assert os.path.exists(checkpoint_path), f"Checkpoint file {checkpoint_path} does not exist."
-        logger.info(f"loading CLIPScoreFusion checkpoint from {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        scaler.load_state_dict(checkpoint["scaler"])
 
     # Move model to GPUs
     model.train()
@@ -229,8 +212,6 @@ def main(config):
     logger.info("Preparing dataset ...")  # Note printing only available in the main process
     logger.info(f"Loading dataset from {config.mbeir_data_dir}{config.data_config.train_query_data_path}...")
 
-    img_preprocess_fn = model_without_ddp.get_img_preprocess_fn()
-    tokenizer = model_without_ddp.get_tokenizer()
     num_tasks = utils.get_world_size()
     global_rank = utils.get_rank()
     train_dataset, train_collector = build_mbeir_dataset_from_config(
@@ -291,10 +272,7 @@ def main(config):
     scheduler = CosineAnnealingLR(optimizer, T_max=t_total, eta_min=0)
 
     epoch = 0
-    if ckpt_config.resume_training:
-        scheduler.load_state_dict(checkpoint["scheduler"])
-        epoch = checkpoint["epoch"] + 1
-
+    
     # Training loop
     dist.barrier()
     train(
@@ -312,19 +290,20 @@ def main(config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config_path", default="config.yaml", help="Path to the config file.")
+    parser.add_argument("--config_path", default="/root/uniir/src/models/uniir_clip/clip_scorefusion/configs_scripts/large/train/inbatch/hf_inbatch_fashion200k.yaml", help="Path to the config file.")
     parser.add_argument(
         "--uniir_dir",
         type=str,
-        default="/data/UniIR",
+        default="/root/uniir",
         help="Path to UniIR directory to save checkpoints, embeddings, etc.",
     )
     parser.add_argument(
         "--mbeir_data_dir",
         type=str,
-        default="/data/UniIR/mbeir_data",
+        default="/data/multimodal/M-BEIR",
         help="Path to mbeir dataset directory",
     )
+    parser.add_argument("--debug", action="store_true")
     # parser.add_argument(
     #     "--gpu",
     #     type=int,
@@ -345,22 +324,23 @@ if __name__ == "__main__":
     config.dist_config.distributed_mode = args.distributed
 
     # Set up wandb
-    if config.wandb_config.enabled and utils.is_main_process():
-        load_dotenv()  # Load .env and get WANDB_API_KEY, WANDB_PROJECT, and WANDB_ENTITY
-        wandb_key = os.environ.get("WANDB_API_KEY")
-        wandb_project = os.environ.get("WANDB_PROJECT")
-        wandb_entity = os.environ.get("WANDB_ENTITY")
+    if not args.debug:
+        if config.wandb_config.enabled and utils.is_main_process():
+            load_dotenv()  # Load .env and get WANDB_API_KEY, WANDB_PROJECT, and WANDB_ENTITY
+            wandb_key = os.environ.get("WANDB_API_KEY")
+            wandb_project = os.environ.get("WANDB_PROJECT")
+            wandb_entity = os.environ.get("WANDB_ENTITY")
 
-        if not wandb_key:
-            raise ValueError("WANDB_API_KEY not found. Ensure it's set in the .env file.")
+            if not wandb_key:
+                raise ValueError("WANDB_API_KEY not found. Ensure it's set in the .env file.")
 
-        wandb.login(key=wandb_key)
-        wandb.init(
-            project=wandb_project,
-            entity=wandb_entity,
-            name=config.wandb_config.experiment_name,
-            config=OmegaConf.to_container(config, resolve=True),
-        )
+            wandb.login(key=wandb_key)
+            wandb.init(
+                project=wandb_project,
+                entity=wandb_entity,
+                name=config.wandb_config.experiment_name,
+                config=OmegaConf.to_container(config, resolve=True),
+            )
 
     # Set up logger
     if utils.is_main_process():

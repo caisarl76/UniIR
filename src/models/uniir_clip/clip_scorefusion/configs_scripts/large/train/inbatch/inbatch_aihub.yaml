@@ -6,10 +6,10 @@ data_config:
   query_instruct_path: instructions/query_instructions.tsv
   returns: null
   shuffle_cand: true
-  train_cand_pool_path: cand_pool/global/mbeir_union_train_cand_pool.jsonl
-  train_query_data_path: query/union_train/mbeir_union_up_train.jsonl
-  val_cand_pool_path: cand_pool/global/mbeir_union_val_cand_pool.jsonl
-  val_query_data_path: query/union_val/mbeir_union_val.jsonl
+  train_cand_pool_path: cand_pool/local/mbeir_aihub_cand_pool.jsonl
+  train_query_data_path: query/train/mbeir_aihub_train.jsonl
+  val_cand_pool_path: cand_pool/local/mbeir_aihub_cand_pool.jsonl
+  val_query_data_path: query/val/mbeir_aihub_val.jsonl
 dataloader_config:
   num_workers: 5
   train_batch_size: 105
@@ -17,12 +17,12 @@ dataloader_config:
 dist_config:
   dist_url: env://
 evaluator:
-  enable_eval: false
+  enable_eval: true
   eval_freq: 1
   print_freq: 10
 experiment:
   description: ${model.name} ${model.size} ${experiment.instruct_status} ${experiment.exp_name}
-  exp_name: InBatch
+  exp_name: InBatch_fashion200k
   instruct_status: Instruct
   path_suffix: ${model.short_name}/${model.size}/${experiment.instruct_status}/${experiment.exp_name}/
 logger_config:

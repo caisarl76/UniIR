@@ -11,10 +11,11 @@ COMMON_DIR="$SRC/common"
 
 # Path to MBEIR data and UniIR directory where we store the checkpoints, embeddings, etc.
 UNIIR_DIR="/root/uniir/" # <--- Change this to the UniIR directory
-MBEIR_DATA_DIR="/data/UniIR/M-BEIR/" # <--- Change this to the MBEIR data directory you download from HF page
+MBEIR_DATA_DIR="/data/multimodal/M-BEIR/" # <--- Change this to the MBEIR data directory you download from HF page
 
 # Path to config dir
-MODEL="uniir_clip/clip_scorefusion"  # <--- Change this to the model you want to run
+MODEL="Bingsu/clip-vit-large-patch14-ko"  # <--- Change this to the model you want to run
+# MODEL="uniir_clip/clip_scorefusion"  # <--- Change this to the model you want to run
 MODEL_DIR="$SRC/models/$MODEL"
 SIZE="large"
 MODE="train"  # <--- Change this to the mode you want to run
@@ -29,7 +30,7 @@ echo "PYTHONPATH: $PYTHONPATH"
 echo  "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 
 # Update config
-CONFIG_PATH="$CONFIG_DIR/inbatch.yaml"
+CONFIG_PATH="$CONFIG_DIR/hf_inbatch_fashion200k.yaml"
 cd $COMMON_DIR
 python config_updater.py \
     --update_mbeir_yaml_instruct_status \
@@ -38,7 +39,7 @@ python config_updater.py \
 
 # Change to model directory
 cd $MODEL_DIR
-SCRIPT_NAME="train.py"
+SCRIPT_NAME="train_hf.py"
 echo "CONFIG_PATH: $CONFIG_PATH"
 echo "SCRIPT_NAME: $SCRIPT_NAME"
 
@@ -47,7 +48,7 @@ echo "SCRIPT_NAME: $SCRIPT_NAME"
 conda activate /data/conda_env/clip # <--- Change this to the name of your conda environment
 
 # Run training command
-python -m torch.distributed.run --nproc_per_node=$NPROC $SCRIPT_NAME \
+python -m torch.distributed.run --nproc_per_node=$NPROC --master_port=29511 $SCRIPT_NAME \
     --config_path "$CONFIG_PATH" \
     --uniir_dir "$UNIIR_DIR" \
     --mbeir_data_dir "$MBEIR_DATA_DIR"

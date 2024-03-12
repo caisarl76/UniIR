@@ -1,66 +1,63 @@
-"""
-Score level fusion model using CLIP
-Code adapted from OpenAI's CLIP codebase
-"""
-
+from typing import Any, Optional, Tuple, Union
+from dataclasses import dataclass
+import torch.nn.functional as F
 import torch
 from torch import nn
-import torch.nn.functional as F
-import clip
-import torch.distributed.nn
-
-# class HFCLIPScoreFusion(nn.Module):
-#     def __init__(self, model_name=)
 
 
-class CLIPScoreFusion(nn.Module):
-    def __init__(self, model_name="ViT-B/32", device="cuda", jit=False, download_root=None, config=None):
-        super().__init__()
+from transformers.models.clip.modeling_clip import CLIPModel, CLIPPreTrainedModel, CLIPOutput, CLIPConfig
+from transformers import AutoModel, AutoProcessor, AutoTokenizer
 
-        # Load pre-trained CLIP model
-        self.clip_model, self.img_preprocess_fn = clip.load(model_name, device, jit, download_root=download_root)
-        self.tokenizer = clip.tokenize
-        self.loss_function = nn.CrossEntropyLoss()
-        if config is not None:
-            self.gather_embeddings = config.model.gather_embeddings
-            self.in_batch_neg_num = config.data_config.in_batch_neg_num
+class HF_CLIPScoreFusion(CLIPModel):
+    config_class = CLIPConfig
+    def __init__(self, config:CLIPConfig):
+        super().__init__(config)
+    
+    def fuse_embeddings(self, text_embeds, image_embeds):
+        return image_embeds + text_embeds
+    
+    def encode_multimodal_input(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        return_loss: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, CLIPOutput]:
+        
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-    def get_img_preprocess_fn(self):
-        return self.img_preprocess_fn
+        vision_outputs = self.vision_model(
+            pixel_values=pixel_values,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
 
-    def get_tokenizer(self):
-        def tokenizer_wrapper(txt):
-            tokenizer = self.tokenizer
-            txt_tensor = tokenizer(txt, context_length=77, truncate=True)
-            return txt_tensor
+        text_outputs = self.text_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
 
-        return tokenizer_wrapper
+        image_embeds = vision_outputs[1]
+        image_embeds = self.visual_projection(image_embeds)
 
-    def encode_text(self, text_tensor):
-        return self.clip_model.encode_text(text_tensor)
-
-    def encode_image(self, image_tensor):
-        return self.clip_model.encode_image(image_tensor)
-
-    def fuse_embeddings(self, img_emb, txt_emb):
-        fused_emb = img_emb + txt_emb
-        return fused_emb
-
-    def encode_multimodal_input(self, txt_tensor, img_tensor, txt_mask, img_mask):
-        """
-        :param txt_tensor:
-        :param img_tensor:
-        :param txt_mask:  expected shape: [batch_size, 1]
-        :param img_mask:  expected shape: [batch_size, 1]
-        :return:
-        """
-        txt_emb = self.encode_text(txt_tensor) * txt_mask.unsqueeze(-1)
-        img_emb = self.encode_image(img_tensor) * img_mask.unsqueeze(-1)
-        return self.fuse_embeddings(txt_emb, img_emb)  # shape: [batch_size, embed_dim]
-
-    def get_logit_scale(self):
-        return self.clip_model.logit_scale.exp()
-
+        text_embeds = text_outputs[1]
+        text_embeds = self.text_projection(text_embeds)
+        
+        return self.fuse_embeddings(text_embeds, image_embeds)
+        
     def compute_inbatch_contrastive_loss(self, batch):
         """
          adapted from the CLIP codebase and UniVL-DR codebase
@@ -141,12 +138,12 @@ class CLIPScoreFusion(nn.Module):
 
         outputs = {"loss": loss, "accuracy": accuracy}
         return outputs
-
+    
     def forward(self, batch, encode_mbeir_batch=False):
         if encode_mbeir_batch:
             return self.encode_mbeir_batch(batch)
         return self.compute_inbatch_contrastive_loss(batch)
-
+    
     def encode_mbeir_batch(self, batch):
         # Get hashed id_list
         id_list = batch.get("did_list") or batch.get("qid_list")

@@ -11,9 +11,10 @@ COMMON_DIR="$SRC/common"
 
 # Path to MBEIR data and UniIR directory where we store the checkpoints, embeddings, etc.
 UNIIR_DIR="/root/uniir/" # <--- Change this to the UniIR directory
-MBEIR_DATA_DIR="/data/UniIR/M-BEIR/" # <--- Change this to the MBEIR data directory you download from HF page
+MBEIR_DATA_DIR="/data/multimodal/aihub/mbeir" # <--- Change this to the MBEIR data directory you download from HF page
 
 # Path to config dir
+# MODEL="Bingsu/clip-vit-large-patch14-ko"  # <--- Change this to the model you want to run
 MODEL="uniir_clip/clip_scorefusion"  # <--- Change this to the model you want to run
 MODEL_DIR="$SRC/models/$MODEL"
 SIZE="large"
@@ -29,7 +30,7 @@ echo "PYTHONPATH: $PYTHONPATH"
 echo  "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 
 # Update config
-CONFIG_PATH="$CONFIG_DIR/inbatch.yaml"
+CONFIG_PATH="$CONFIG_DIR/inbatch_aihub.yaml"
 cd $COMMON_DIR
 python config_updater.py \
     --update_mbeir_yaml_instruct_status \
