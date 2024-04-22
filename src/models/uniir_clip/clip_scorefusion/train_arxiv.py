@@ -326,13 +326,20 @@ if __name__ == "__main__":
         type=int,
         default=0
     )
+    parser.add_argument("--dataNum", type=int, default=11)
     parser.add_argument("--train_size", type=int, default=90000)
     parser.add_argument("--val_size",type=int, default=10000)
     args = parser.parse_args()
     
-    
     print(f"Loading config from {args.config_path}")
     config = OmegaConf.load(args.config_path)
+
+    # Set dataset config
+    config.data_config.train_cand_pool_path = "passage/train_%d_%d.jsonl" %(args.dataNum, args.train_size)
+    config.data_config.train_query_data_path = "query/train_%d_%d.jsonl" %(args.dataNum, args.train_size)
+    config.data_config.val_cand_pool_path = "passage/val_%d_%d.jsonl" %(args.dataNum, args.val_size)
+    config.data_config.val_query_data_path = "query/val_%d_%d.jsonl" %(args.dataNum, args.val_size)
+    config.experiment.exp_name = "ArxivQA%d_train%d_val%d"%(args.dataNum, args.train_size, args.val_size)
 
     # Parse arguments to config
     config.uniir_dir = args.uniir_dir

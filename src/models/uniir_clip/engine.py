@@ -4,7 +4,7 @@ from torch.cuda.amp import autocast
 from models.uniir_clip import utils
 
 
-def train_one_epoch(model, data_loader, optimizer, epoch, gpu_id, scheduler, global_step, scaler, config):
+def train_one_epoch(model, data_loader, optimizer, epoch, gpu_id, scheduler, global_step, scaler, config, debug=False):
     model.train()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -16,6 +16,10 @@ def train_one_epoch(model, data_loader, optimizer, epoch, gpu_id, scheduler, glo
 
     accumulation_steps = config.trainer_config.gradient_accumulation_steps
     accumulation_counter = 0
+    
+    if debug:
+        batch_losses = []
+    
     for i, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
@@ -26,6 +30,12 @@ def train_one_epoch(model, data_loader, optimizer, epoch, gpu_id, scheduler, glo
             outputs = model(batch)
             loss = outputs["loss"]
             inbatch_accuracy = outputs["accuracy"]
+        if debug:
+            batch_loss = {
+                'loss':outputs['loss_batch'],
+                'p_did':batch['p_did_list'].cpu().tolist(),
+            }
+            batch_losses.append(batch_loss)
 
         # Scale the loss by the number of accumulation steps since backward averages the gradients.
         loss = loss / accumulation_steps
@@ -52,18 +62,22 @@ def train_one_epoch(model, data_loader, optimizer, epoch, gpu_id, scheduler, glo
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger.global_avg())
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    if debug:
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, batch_losses
+    else:
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
 @torch.no_grad()
-def eval_engine(model, data_loader, gpu_id, config):
+def eval_engine(model, data_loader, gpu_id, config, debug=False):
     model.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter("loss", utils.SmoothedValue(window_size=1, fmt="{value:.4f}"))
     metric_logger.add_meter("inbatch_accuracy", utils.SmoothedValue(window_size=1, fmt="{value:.4f}"))
     header = "Test:"
     print_freq = config.evaluator.print_freq
-
+    if debug:
+        batch_losses = []
     for i, batch in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
@@ -74,6 +88,13 @@ def eval_engine(model, data_loader, gpu_id, config):
             outputs = model(batch)
             loss = outputs["loss"]
             inbatch_accuracy = outputs["accuracy"]
+            if debug:
+                batch_loss = {
+                    'loss':outputs['loss_batch'],
+                    'p_did':batch['p_did_list'].cpu().tolist(),
+                }
+                batch_losses.append(batch_loss)
+
 
         metric_logger.update(loss=loss.item())
         metric_logger.update(inbatch_accuracy=inbatch_accuracy.item())
@@ -81,4 +102,7 @@ def eval_engine(model, data_loader, gpu_id, config):
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger.global_avg())
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    if debug:
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, batch_losses
+    else:
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}

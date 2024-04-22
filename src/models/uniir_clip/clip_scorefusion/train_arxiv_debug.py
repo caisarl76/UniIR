@@ -6,6 +6,7 @@ Training Code for CLIP-SF
 import argparse
 import logging
 import os
+import json
 import random
 import sys
 sys.path.append('/root/uniir/src/')
@@ -13,23 +14,20 @@ sys.path.append('/root/uniir/src/')
 # Third-party
 import numpy as np
 import torch
-import torch.distributed as dist
 from torch import optim
 from torch.utils.data import DataLoader
-from torch.utils.data import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
+
 import torch.backends.cudnn as cudnn
 from torch.cuda.amp import GradScaler
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from omegaconf import OmegaConf
 from dotenv import load_dotenv
-import wandb
+
 
 # Local modules or packages
 from data.mbeir_data_utils import (
     build_mbeir_dataset_from_config,
     DatasetType,
-    build_distributed_sampler_list,
     build_dataloader_list,
 )
 from models.uniir_clip.engine import train_one_epoch, eval_engine
@@ -101,15 +99,13 @@ def train(
     train_loader,
     val_loader,
     model,
-    model_without_ddp,
     optimizer,
     scheduler,
     scaler,
     config,
     epoch,
 ):
-    gpu_id = config.dist_config.gpu_id
-    is_distributed_mode = config.dist_config.distributed_mode
+    gpu_id = config.gpu_id
     global_step, total_loss, best_inbatch_accuracy = (
         0,
         0.0,
@@ -120,12 +116,15 @@ def train(
 
     if epoch != 0:
         print(f"Resuming training from epoch {epoch}")
+        
+    loss_dict = {
+        'train':[],
+        'val':[]
+    }
     for epoch in range(epoch, config.trainer_config.num_train_epochs):
         # Set different seed for different epoch
-        if is_distributed_mode:
-            train_loader.sampler.set_epoch(epoch)
-
-        train_stats = train_one_epoch(
+       
+        train_stats, batch_loss = train_one_epoch(
             model,
             train_loader,
             optimizer,
@@ -135,15 +134,19 @@ def train(
             global_step,
             scaler,
             config,
+            debug=True
         )
-
+        
+        loss_dict['train'].append(batch_loss)
+        
         eval_freq = config.evaluator.eval_freq
         if val_loader is None or epoch % eval_freq != 0:
             log_stats = log_results(train_stats, None, None, epoch, best_epoch)
             if utils.is_main_process():
-                save_checkpoint(model_without_ddp, optimizer, scheduler, epoch, scaler, config)
+                save_checkpoint(model, optimizer, scheduler, epoch, scaler, config)
         else:
-            val_status = eval_engine(model, val_loader, gpu_id, config)
+            val_status, val_losses = eval_engine(model, val_loader, gpu_id, config, debug=True)
+            loss_dict['val'].append(batch_loss)
             try:
                 inbatch_accuracy = float(val_status["inbatch_accuracy"])
             except ValueError:
@@ -151,7 +154,7 @@ def train(
                 inbatch_accuracy = 100.0
             # Note: still save the model even if the in-batch accuracy is not the best
             if utils.is_main_process():
-                save_checkpoint(model_without_ddp, optimizer, scheduler, epoch, scaler, config)
+                save_checkpoint(model, optimizer, scheduler, epoch, scaler, config)
             if inbatch_accuracy >= best_inbatch_accuracy:
                 # if utils.is_main_process():
                 #     save_checkpoint(model_without_ddp, optimizer, scheduler, epoch, scaler, config)
@@ -159,20 +162,15 @@ def train(
                 best_epoch = epoch
             log_stats = log_results(train_stats, val_status, None, epoch, best_epoch)
 
-        if utils.is_main_process():
-            # logger_out_dir = os.path.join(config.uniir_dir, config.logger_config.logger_out_dir)
-            # logger_out_path = os.path.join(logger_out_dir, config.logger_config.logger_out_file_name)
-            # with open(logger_out_path, "a") as f:
-            #     f.write(json.dumps(log_stats) + "\n")
-            if config.wandb_config.enabled:
-                wandb.log(log_stats)
+        
 
-        dist.barrier()  # Wait for the master process to finish writing the log file
         torch.cuda.empty_cache()
 
-
+    with open(os.path.join("/root/uniir/",config.batch_loss_name), 'w') as f:
+        json.dump(loss_dict, f)
+        
+        
 def main(config):
-    is_distributed_mode = config.dist_config.distributed_mode
 
     # Set up seed for reproducibility
     seed = config.seed + utils.get_rank()
@@ -189,6 +187,7 @@ def main(config):
         model_name=model_config.clip_vision_model_name,
         download_root=pretrained_clip_model_dir,
         config=config,
+        debug=True
     )
     model.float()  # The origial CLIP was in fp16 so we need to convert it to fp32
     
@@ -215,18 +214,14 @@ def main(config):
 
     # Move model to GPUs
     model.train()
-    model = model.to(config.dist_config.gpu_id)
-    model_without_ddp = model
-    if is_distributed_mode:
-        model = DDP(model, device_ids=[config.dist_config.gpu_id])
-        model_without_ddp = model.module
-
+    model = model.to(config.gpu_id)
+    
     # Prepare datasets and dataloaders
     logger.info("Preparing dataset ...")  # Note printing only available in the main process
     logger.info(f"Loading dataset from {config.mbeir_data_dir}{config.data_config.train_query_data_path}...")
 
-    img_preprocess_fn = model_without_ddp.get_img_preprocess_fn()
-    tokenizer = model_without_ddp.get_tokenizer()
+    img_preprocess_fn = model.get_img_preprocess_fn()
+    tokenizer = model.get_tokenizer()
     num_tasks = utils.get_world_size()
     global_rank = utils.get_rank()
     train_dataset, train_collector = build_mbeir_dataset_from_config(
@@ -235,19 +230,13 @@ def main(config):
         img_preprocess_fn=img_preprocess_fn,
         dataset_type=DatasetType.MAIN_TRAIN,
     )
-    train_sampler = DistributedSampler(
-        dataset=train_dataset,
-        num_replicas=num_tasks,
-        rank=global_rank,
-        shuffle=True,
-    )
+    
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=config.dataloader_config.train_batch_size,
         num_workers=config.dataloader_config.num_workers,
         pin_memory=True,
-        sampler=train_sampler,
-        shuffle=False,  # Note: since we use sampler, shuffle should be False
+        shuffle=True,  # Note: since we use sampler, shuffle should be False
         collate_fn=train_collector,
         drop_last=True,
     )
@@ -261,18 +250,11 @@ def main(config):
             img_preprocess_fn=img_preprocess_fn,
             dataset_type=DatasetType.IN_BATCH_VAL,
         )
-        in_batch_val_sampler = DistributedSampler(
-            dataset=in_batch_val_dataset,
-            num_replicas=num_tasks,
-            rank=global_rank,
-            shuffle=True,
-        )
         valid_loader = DataLoader(
             dataset=in_batch_val_dataset,
             batch_size=config.dataloader_config.valid_batch_size,
             num_workers=config.dataloader_config.num_workers,
             pin_memory=True,
-            sampler=in_batch_val_sampler,
             shuffle=False,  # Note: since we use sampler, shuffle should be False
             collate_fn=in_batch_val_collector,
             drop_last=True,
@@ -292,12 +274,10 @@ def main(config):
         epoch = checkpoint["epoch"] + 1
 
     # Training loop
-    # dist.barrier()
     train(
         train_loader,
         valid_loader,
         model,
-        model_without_ddp,
         optimizer,
         scheduler,
         scaler,
@@ -326,41 +306,30 @@ if __name__ == "__main__":
         type=int,
         default=0
     )
+    parser.add_argument("--dataNum", type=int, default=11)
     parser.add_argument("--train_size", type=int, default=90000)
-    parser.add_argument("--val_size",type=int, default=10000)
+    parser.add_argument("--val_size",type=int, default=2000)
     args = parser.parse_args()
-    
     
     print(f"Loading config from {args.config_path}")
     config = OmegaConf.load(args.config_path)
+    config.gpu_id = args.gpu
+    config.model.gather_embeddings = False
+    # Set dataset config
+    config.data_config.train_cand_pool_path = "passage/train_%d_%d.jsonl" %(args.dataNum, args.train_size)
+    config.data_config.train_query_data_path = "query/train_%d_%d.jsonl" %(args.dataNum, args.train_size)
+    config.data_config.val_cand_pool_path = "passage/val_%d_%d.jsonl" %(args.dataNum, args.val_size)
+    config.data_config.val_query_data_path = "query/val_%d_%d.jsonl" %(args.dataNum, args.val_size)
+    config.experiment.exp_name = "ArxivQA%d_train%d_val%d"%(args.dataNum, args.train_size, args.val_size)
+    
+    config.trainer_config.num_train_epochs = 4
 
     # Parse arguments to config
     config.uniir_dir = args.uniir_dir
     config.mbeir_data_dir = args.mbeir_data_dir
+    
+    config.batch_loss_name = "arxiv_%d_%d_%d" %(args.dataNum, args.train_size, args.val_size)
 
-    # Initialize distributed training
-    args.dist_url = config.dist_config.dist_url  # Note: The use of args is a historical artifact :(
-    utils.init_distributed_mode(args)
-    config.dist_config.gpu_id = args.gpu
-    config.dist_config.distributed_mode = args.distributed
-
-    # Set up wandb
-    if config.wandb_config.enabled and utils.is_main_process():
-        load_dotenv()  # Load .env and get WANDB_API_KEY, WANDB_PROJECT, and WANDB_ENTITY
-        wandb_key = "63f22b28f9edd7bcfd2b752c81b1efe718195b51"
-        wandb_project = os.environ.get("WANDB_PROJECT")
-        wandb_entity = os.environ.get("WANDB_ENTITY")
-
-        if not wandb_key:
-            raise ValueError("WANDB_API_KEY not found. Ensure it's set in the .env file.")
-
-        wandb.login(key=wandb_key)
-        wandb.init(
-            project=wandb_project,
-            entity=wandb_entity,
-            name=config.wandb_config.experiment_name,
-            config=OmegaConf.to_container(config, resolve=True),
-        )
 
     # Set up logger
     if utils.is_main_process():
@@ -380,11 +349,3 @@ if __name__ == "__main__":
         logger.info(config)
 
     main(config)
-
-    # Close wandb
-    if config.wandb_config.enabled and utils.is_main_process():
-        wandb.finish()
-
-    # Destroy the process group
-    if config.dist_config.distributed_mode:
-        torch.distributed.destroy_process_group()

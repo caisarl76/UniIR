@@ -61,7 +61,10 @@ def load_runfile(filename, load_task_id=False):
 
 def build_model_from_config(config):
     model_name = config.model.name
-
+    
+    if model_name == "SGPT":
+        from gritlm import GritLM
+        
     if model_name == "CLIPScoreFusion":
         from models.uniir_clip.clip_scorefusion.clip_sf import CLIPScoreFusion
 

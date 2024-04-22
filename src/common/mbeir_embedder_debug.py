@@ -12,15 +12,11 @@ import gc
 import random
 
 import torch
-import torch.distributed as dist
 from torch.utils.data import DataLoader
-from torch.nn.parallel import DistributedDataParallel as DDP
 import numpy as np
 from torch.cuda.amp import autocast
 import transformers
 
-import dist_utils
-from dist_utils import ContiguousDistributedSampler
 from utils import build_model_from_config
 from data.mbeir_dataset import (
     MBEIRMainDataset,
@@ -37,12 +33,8 @@ def generate_embeds_and_ids_for_dataset_with_gather(model, data_loader, device, 
     id_list = []
 
     total_cores = os.cpu_count()
-    if dist.is_initialized():
-        world_size = dist.get_world_size()
-        rank = dist.get_rank()
-        initial_threads_per_process = total_cores // world_size
-        torch.set_num_threads(initial_threads_per_process)
-        data_loader = tqdm.tqdm(data_loader, desc=f"Rank {rank}")
+
+    data_loader = tqdm.tqdm(data_loader)
     for batch in data_loader:
         # Used in combination with pin_memory=True
         for key, value in batch.items():
@@ -60,64 +52,8 @@ def generate_embeds_and_ids_for_dataset_with_gather(model, data_loader, device, 
 
     # Convert list of tensors to a single tensor
     embedding_tensor = torch.cat(embedding_tensors, dim=0)
-    embedding_list = None
-
-    if dist.is_initialized():
-        # First, share the sizes of tensors across processes
-        size_tensor = torch.tensor([embedding_tensor.size(0)], dtype=torch.long, device=device)
-
-        # Allocate tensors to gather results on rank 0
-        if dist.get_rank() == 0:
-            # Allocate tensors with the correct sizes on rank 0
-            gathered_embeddings = [torch.empty_like(embedding_tensor) for _ in range(dist.get_world_size())]
-            id_list_gathered = [list() for _ in range(dist.get_world_size())]
-            sizes = [torch.zeros(1, dtype=torch.long, device=device) for _ in range(dist.get_world_size())]
-        else:
-            gathered_embeddings = None
-            id_list_gathered = None
-            sizes = None
-
-        # Synchronize all processes before gathering data
-        dist.barrier()
-
-        # Gather embeddings from all processes
-        dist.gather(embedding_tensor, gather_list=gathered_embeddings, dst=0)
-        # Gather ids from all processes
-        dist.gather_object(id_list, object_gather_list=id_list_gathered, dst=0)
-        # Gather sizes from all processes
-        dist.gather(size_tensor, gather_list=sizes, dst=0)
-
-        # Synchronize all processes after gathering data
-        dist.barrier()
-
-        # On the main process, concatenate the results
-        if dist.get_rank() == 0:
-            print(f"Embedder Log: Gathered embeddings and ids on rank 0, starting to process them...")
-
-            # Increase number of threads for rank 0 during conversion
-            torch.set_num_threads(total_cores)
-
-            # Trim the last tensors based on the gathered sizes
-            gathered_embeddings[-1] = gathered_embeddings[-1][: sizes[-1][0]]
-            embedding_list = torch.cat(gathered_embeddings, dim=0)
-
-            # Flatten gathered ids
-            id_list = [id for sublist in id_list_gathered for id in sublist]
-            assert len(id_list) == embedding_list.size(0)
-            # Check unique ids
-            assert len(id_list) == len(set(id_list)), "Hashed IDs should be unique"
-            print(f"Embedder Log: Finished processing embeddings and ids on rank 0.")
-
-            # Note: we are using float16 to save space, and the precision loss is negligible.
-            embedding_list = embedding_list.half().cpu().numpy()
-            print(f"Embedder Log: Converted embedding_list to cpu numpy array of type {embedding_list.dtype}.")
-
-            # Reset number of threads to initial value after conversion
-            torch.set_num_threads(initial_threads_per_process)
-
-        dist.barrier()  # Wait for rank 0 to process the embeddings and ids.
-    else:
-        embedding_list = embedding_tensor.half().cpu().numpy()
+    
+    embedding_list = embedding_tensor.half().cpu().numpy()
 
     return embedding_list, id_list
 
@@ -264,9 +200,11 @@ def generate_embeds_for_config(model, img_preprocess_fn, tokenizer, config):
             else:  # "train" or "val" or "test"
                 # Construct query data path
                 dataset_name = dataset_name.lower()
-                query_data_name = f"mbeir_{dataset_name}_{split_name}.jsonl"
-                query_data_path = os.path.join(split_dir, query_data_name)
-                
+                # query_data_name = f"mbeir_{dataset_name}_{split_name}.jsonl"
+                # query_data_path = os.path.join(split_dir, query_data_name)
+                query_data_name = f"{dataset_name}.jsonl"
+                query_data_path = query_data_name
+
                 # Construct the candidate pool path
                 cand_pool_name = cand_pool_name.lower()
                 cand_pool_file_name = f"mbeir_{cand_pool_name}_cand_pool.jsonl"

@@ -14,13 +14,16 @@ import torch.distributed.nn
 
 
 class CLIPScoreFusion(nn.Module):
-    def __init__(self, model_name="ViT-B/32", device="cuda", jit=False, download_root=None, config=None):
+    def __init__(self, model_name="ViT-B/32", device="cuda", jit=False, download_root=None, config=None, debug=False):
         super().__init__()
 
         # Load pre-trained CLIP model
         self.clip_model, self.img_preprocess_fn = clip.load(model_name, device, jit, download_root=download_root)
         self.tokenizer = clip.tokenize
         self.loss_function = nn.CrossEntropyLoss()
+        self.debug = debug
+        if self.debug:
+            self.loss_batch = nn.CrossEntropyLoss(reduction="none")
         if config is not None:
             self.gather_embeddings = config.model.gather_embeddings
             self.in_batch_neg_num = config.data_config.in_batch_neg_num
@@ -135,11 +138,22 @@ class CLIPScoreFusion(nn.Module):
                 sim_targets = torch.arange(bs).to(score.device)  # [bs]
 
             # compute loss
+            if self.debug:
+                loss_batch = self.loss_batch(score, sim_targets)
             loss = self.loss_function(score, sim_targets)
             _max_score, max_idxs = torch.max(score, 1)
             accuracy = (max_idxs == sim_targets).sum() / bs
 
-        outputs = {"loss": loss, "accuracy": accuracy}
+        if self.debug:
+            outputs = {
+                "loss": loss, "accuracy": accuracy, 
+                "loss_batch":loss_batch.cpu().detach().tolist(),
+                'p_did':batch['p_did_list'],
+                }
+        else:
+            outputs = {"loss": loss, "accuracy": accuracy}
+
+        
         return outputs
 
     def forward(self, batch, encode_mbeir_batch=False):

@@ -14,7 +14,8 @@ import gc
 
 import faiss
 import pickle
-
+import sys
+sys.path.append('/root/uniir/src/')
 from data.preprocessing.utils import (
     load_jsonl_as_list,
     save_list_as_jsonl,
@@ -360,12 +361,14 @@ def run_retrieval(config):
         "mscoco_task3": 8,
         "fashion200k_task3": 9,
         "nights_task4": 10,
-        "oven_task6": 11,
-        "infoseek_task6": 12,
-        "fashioniq_task7": 13,
-        "cirr_task7": 14,
-        "oven_task8": 15,
-        "infoseek_task8": 16,
+        "arxiv11":11,
+        "arxiv12":12,
+        "oven_task6": 13,
+        "infoseek_task6": 14,
+        "fashioniq_task7": 15,
+        "cirr_task7": 16,
+        "oven_task8": 17,
+        "infoseek_task8": 18,
     }
     split_order = {'val': 1, 'test': 2}
     cand_pool_order = {'union': 99}
@@ -389,7 +392,8 @@ def run_retrieval(config):
     if retrieval_config.write_to_tsv:
         # TODO: create a better file name
         date_time = datetime.now().strftime("%m-%d-%H")
-        tsv_file_name = f"eval_results_{date_time}.tsv"
+        qrel_name_ = qrel_path.split('/')[-1].split('.')[0]
+        tsv_file_name = f"eval_results_{config.retrieval_config.train_datasets_config.set_size}_{qrel_name_}.tsv"
         tsv_file_path = os.path.join(exp_tsv_results_dir, tsv_file_name)
         tsv_data = []
         header = ["TaskID", "Task", "Dataset", "Split", "Metric", "CandPool", "Value", "UnionPool", "UnionValue"]
@@ -526,6 +530,10 @@ def parse_arguments():
     parser.add_argument("--enable_create_index", action="store_true", help="Enable create index")
     parser.add_argument("--enable_hard_negative_mining", action="store_true", help="Enable hard negative mining")
     parser.add_argument("--enable_retrieval", action="store_true", help="Enable retrieval")
+    parser.add_argument("--debug", action='store_true')
+    parser.add_argument("--train_size", type=int, default=90000)
+    parser.add_argument("--val_size", type=int, default=10000)
+    parser.add_argument("--data_num", type=int, default=12)
     return parser.parse_args()
 
 
@@ -534,9 +542,21 @@ def main():
     config = OmegaConf.load(args.config_path)
     config.uniir_dir = args.uniir_dir
     config.mbeir_data_dir = args.mbeir_data_dir
+    if args.debug:
+        import os
+        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
+        os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
     print(OmegaConf.to_yaml(config, sort_keys=False))
 
+    if 'index_' in args.config_path:
+        config.index_config.cand_pools_config.cand_pools_name_to_idx = ['val_%d_%d'%(args.data_num, args.val_size)]
+    elif 'retrieval' in args.config_path:
+        config.retrieval_config.val_datasets_config.correspond_cand_pools_name = ['val_%d_%d'%(args.data_num, args.val_size)]
+        config.retrieval_config.val_datasets_config.correspond_qrels_name = ['arxiv_%d_%d_%d'%(args.data_num, args.val_size, args.data_num )]
+        config.retrieval_config.val_datasets_config.datasets_name = ['arxiv_%d_%d'%(args.data_num, args.val_size)]
+        config.retrieval_config.train_datasets_config.set_size = args.train_size
+        config.retrieval_config.val_datasets_config.set_size = args.val_size
     if args.enable_hard_negative_mining:
         run_hard_negative_mining(config)
 

@@ -137,7 +137,7 @@ class MBEIRMainDataset(MBEIRDatasetBase):
         self.returns = {
             "hashed_qid": True,  # default value
             "task_id": False,  # default value
-            "hashed_p_did": False,  # default value
+            "hashed_p_did": True,  # default value
             **returns,  # Overwrite defaults with any values provided in returns
         }
         if print_config:

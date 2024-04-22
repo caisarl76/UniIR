@@ -11,7 +11,7 @@ COMMON_DIR="$SRC/common"
 
 # Path to MBEIR data and UniIR directory where we store the checkpoints, embeddings, etc.
 UNIIR_DIR="/root/uniir/" # <--- Change this to the UniIR directory
-MBEIR_DATA_DIR="/data/multimodal/aihub/mbeir" # <--- Change this to the MBEIR data directory you download from HF page
+MBEIR_DATA_DIR="/data/multimodal/arxiv_qa/" # <--- Change this to the MBEIR data directory you download from HF page
 
 # Path to config dir
 # MODEL="Bingsu/clip-vit-large-patch14-ko"  # <--- Change this to the model you want to run
@@ -23,14 +23,14 @@ EXP_NAME="inbatch"
 CONFIG_DIR="$MODEL_DIR/configs_scripts/$SIZE/$MODE/$EXP_NAME"
 
 # Set CUDA devices and PYTHONPATH
-export CUDA_VISIBLE_DEVICES=2 # <--- Change this to the CUDA devices you want to us
+export CUDA_VISIBLE_DEVICES=1 # <--- Change this to the CUDA devices you want to us
 NPROC=1
 export PYTHONPATH=$SRC
 echo "PYTHONPATH: $PYTHONPATH"
 echo  "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 
 # Update config
-CONFIG_PATH="$CONFIG_DIR/inbatch_aihub.yaml"
+CONFIG_PATH="$CONFIG_DIR/inbatch_arxivqa12_small.yaml"
 cd $COMMON_DIR
 python config_updater.py \
     --update_mbeir_yaml_instruct_status \
@@ -48,7 +48,7 @@ echo "SCRIPT_NAME: $SCRIPT_NAME"
 source activate clip # <--- Change this to the name of your conda environment
 
 # Run training command
-python -m torch.distributed.run --nproc_per_node=$NPROC $SCRIPT_NAME \
+python -m torch.distributed.run --nproc_per_node=$NPROC --master_port 29502 $SCRIPT_NAME \
     --config_path "$CONFIG_PATH" \
     --uniir_dir "$UNIIR_DIR" \
     --mbeir_data_dir "$MBEIR_DATA_DIR"
