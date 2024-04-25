@@ -1,0 +1,33 @@
+name: uniir
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.9
+  - pip
+  - pytorch
+  - torchvision
+  - torchaudio
+  - cudatoolkit
+  - faiss-gpu
+  - pip
+  - pip:
+    - omegaconf
+    - python-dotenv
+    - pycocoevalcap
+    - omegaconf
+    - numpy
+    - torch
+    - torchvision
+    - wandb
+    - ftfy
+    - tqdm
+    - regex
+    - typeguard
+    - datasets
+    - transformers
+    - git+https://github.com/openai/CLIP.git
+    - timm
+    - fairscale
+    - opencv-python
